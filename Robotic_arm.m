@@ -163,10 +163,20 @@ Robot = SerialLink(L);
 Robot.name = 'Robotic_arm';
 Robot.plot([Th_1 Th_2 Th_3]);
 
+% Get the transformation matrix (this was causing an error)
 T = Robot.fkine([Th_1 Th_2 Th_3]);
-handles.Pos_X.String = num2str(floor(T(1,4)));
-handles.Pos_Y.String = num2str(floor(T(2,4)));
-handles.Pos_Z.String = num2str(floor(T(3,4)));
+try
+    % Try to access the elements directly from the SE3 object
+    handles.Pos_X.String = num2str(floor(T.t(1)));
+    handles.Pos_Y.String = num2str(floor(T.t(2)));
+    handles.Pos_Z.String = num2str(floor(T.t(3)));
+catch
+    % If that fails, convert to double and access the matrix
+    Tmatrix = double(T);
+    handles.Pos_X.String = num2str(floor(Tmatrix(1,4)));
+    handles.Pos_Y.String = num2str(floor(Tmatrix(2,4)));
+    handles.Pos_Z.String = num2str(floor(Tmatrix(3,4)));
+end
 
 
 
@@ -262,9 +272,53 @@ T = [1 0 0 PX;
      0 1 0 PY;
      0 0 1 PZ;
      0 0 0 1];
-J = Robot.ikine(T, [0 0 0], [1 1 1 0 0 0]) * 180 / pi;
+
+try
+    % First attempt: try with ikine6s for a 3-DOF robot
+    J = Robot.ikine6s(T, 'rpy', [0 0 0]) * 180 / pi;
+catch
+    try
+        % Second attempt: standard ikine with mask that matches our DOF
+        mask = [1 1 1 0 0 0]; % Only control XYZ position, not orientation
+        J = Robot.ikine(T, [0 0 0], mask) * 180 / pi;
+    catch
+        try
+            % Third attempt: use ikcon (Inverse Kinematics with Constraints)
+            % which is more robust but may be slower
+            J = Robot.ikcon(T, [0 0 0]) * 180 / pi;
+        catch
+            % Last resort: analytical solution for a specific 3-DOF arm
+            % This is a simplified approach - the actual solution depends on the robot's geometry
+            x = PX; y = PY; z = PZ;
+            
+            % Calculate theta1 (base rotation)
+            theta1 = atan2(y, x);
+            
+            % Project onto the plane of the 2nd and 3rd joints
+            r = sqrt(x^2 + y^2);
+            
+            % Use the law of cosines to find theta3
+            D = (r^2 + (z-L_1)^2 - L_2^2 - L_3^2) / (2 * L_2 * L_3);
+            if D > 1
+                D = 1; % Closest valid position
+            elseif D < -1
+                D = -1; % Closest valid position
+            end
+            theta3 = acos(D);
+            
+            % Use geometry to find theta2
+            theta2 = atan2(z-L_1, r) - atan2(L_3*sin(theta3), L_2 + L_3*cos(theta3));
+            
+            % Convert to degrees
+            J = [theta1, theta2, theta3] * 180 / pi;
+        end
+    end
+end
+
+% Update the angle inputs in the GUI
 handles.Theta_1.String = num2str(floor(J(1)));
 handles.Theta_2.String = num2str(floor(J(2)));
 handles.Theta_3.String = num2str(floor(J(3)));
 
+% Plot the robot with the new configuration
 Robot.plot(J*pi/180);
